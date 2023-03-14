@@ -13,127 +13,84 @@ D = 0;
 
 R = 0.001;
 Q = C' * C + 0.001 * eye(2);
-Pnow = Q;
-
-P = zeros(2 * N, 2);
-
-P(2 * N - 1, :) = Pnow(1, :);
-P(2 * N, :) = Pnow(2, :);
+P = Q;
 
 % discrete time Riccati equation
-
-for i = N-1:-1:1
-    Pnext = A' * Pnow * A + Q - A' * Pnow * B * inv(B' * Pnow * B + R) * B' * Pnow * A;
-    P(i * 2 - 1 , :) = Pnext(1, :);
-    P(i * 2, :) = Pnext(2, :);
-    Pnow = Pnext;
-end
-
-F = zeros(2 * N, 1);
+F = zeros(2, 1);
 for i = N:-1:1
-    Pnow = [P(i * 2 - 1, :); P(i * 2, :)];
-    Fnext = - inv(B' * Pnow * B + R) * B' * Pnow * A;
-    F(i * 2 - 1 , :) = Fnext(1);
-    F(i * 2, :) = Fnext(2);
+    F = -inv(R + B' * P * B) * B' * P * A;
+    P = A' * P * A + Q - A' * P * B * inv(B' * P * B + R) * B' * P * A;
+    Fpred{i} = F;
 end
 
 % state trajectory
-u = zeros(2, N);
+u = zeros(1, N);
 x = zeros(2, N);
 
-x(:, 1) = x0;
-
-for i=1:N-1
-    Fnow = [F(i * 2 - 1); F(i * 2)];
-    u(:, i) = Fnow' * x(:, i);
-    x(:, i + 1) = A * x(:, i) + B' * u(:, i);
+x(:,1) = x0;
+for i = 1:length(Fpred)-1
+    x(:, i+1) = A * x(:, i) + B * Fpred{i} * x(:, i);
 end
 
 figure(1)
-plot(x(1, 1:N), x(2, 1:N), 'ro-', LineWidth=2)
+plot(x(1, 1:length(Fpred)), x(2, 1:length(Fpred)), 'ro-', LineWidth=2)
 hold on;
-title('State trajectory')
+title('State trajectory N = 5')
 xlabel('x1')
 ylabel('x2')
-
-Finite_cost = 0;
-
-for i=1:N-1
-    Finite_cost = Finite_cost + x(:, i)' * Q * x(:, i) + u(:, i)' * R * u(:, i);
-end
+hold off;
 
 %% Receding horizon fashion
-x0 = [10 10]';
-x = x0;
-n = 1;
-% while x(1) ~= 0 && x(2) ~= 0
-%     [K, S, CLP] = dlqr(A, B, Q, R);
-%     x = A * x + B * K * x;
-%     n = n + 1;
-% end
+figure(2)
+
+x(:,1) = x0;
+i = 1;
+
+while 1
+    if norm(x(:,i)) > 3*norm(x0), fprintf('===> System unstable\n'); break; end
+    if norm(x(:,i)) < 5e-2, fprintf('===> System stable\n'); break; end
+    
+    u(:, i) = F * x(:, i);
+    x(:, i+1) = A * x(:, i) + B * u(:, i);
+    % Plot prediction
+    x_pred = compute_prediction(x(:, i), Fpred, A, B);
+    
+    clf;hold on;grid on;
+    plot(x_pred(1, :), x_pred(2, :), '-o');
+    plot(x(1, 1:i) , x(2, 1:i) , 'LineWidth', 1.5);
+    legend('Prediction','Closed Loop System');
+    title('State Space');
+    pause(0.1)
+    i = i + 1;
+end
+
+fprintf("\nMinimum time horizon: %d\n", i+1)
 
 %% B. Infinite horizon LQR controller
-N = 1000;
-x0 = [10 10]';
+% Compare cost
+[Klqr,~,~] = dlqr(A,B,Q,R);
+costlqr = compute_cost(x0, A - B * Klqr, Klqr , Q, R, 1000);
+costPn = compute_cost(x0, A + B * F, F , Q, R, 1000);
 
-A = [4/3 -2/3; ...
-     1 0];
-B = [1 0]';
-C = [-2/3 1];
-D = 0;
+fprintf('Cost of the optimal LQR controller : %.2f\n', costlqr);
+fprintf('Cost of the N−step controller : %.2f\n', costPn);
 
-R = 0.001;
-Q = C' * C + 0.001 * eye(2);
-Pnow = Q;
-
-P = zeros(2 * N, 2);
-
-P(2 * N - 1, :) = Pnow(1, :);
-P(2 * N, :) = Pnow(2, :);
-
-% discrete time Riccati equation
-
-for i = N-1:-1:1
-    Pnext = A' * Pnow * A + Q - A' * Pnow * B * inv(B' * Pnow * B + R) * B' * Pnow * A;
-    P(i * 2 - 1 , :) = Pnext(1, :);
-    P(i * 2, :) = Pnext(2, :);
-    Pnow = Pnext;
+%%
+function x = compute_prediction(x0,K,A,B)
+x(:,1) = x0;
+for i = 1:length(K)
+    x(:,i+1) = (A + B * K{i}) * x(:,i);
 end
 
-F = zeros(2 * N, 1);
-for i = N:-1:1
-    Pnow = [P(i * 2 - 1, :); P(i * 2, :)];
-    Fnext = - inv(B' * Pnow * B + R) * B' * Pnow * A;
-    F(i * 2 - 1 , :) = Fnext(1);
-    F(i * 2, :) = Fnext(2);
 end
 
-% state trajectory
-u = zeros(2, N);
-x = zeros(2, N);
+function cost = compute_cost(x0,Ak,K,Q,R,steps)
+cost = 0;
+x = x0;
 
-x(:, 1) = x0;
-
-for i=1:N-1
-    Fnow = [F(i * 2 - 1); F(i * 2)];
-    u(:, i) = Fnow' * x(:, i);
-    x(:, i + 1) = A * x(:, i) + B' * u(:, i);
+for i=1:steps
+    cost = cost + x'*(Q+K'*R*K)*x;
+    x = Ak*x;
 end
 
-plot(x(1, 1:N), x(2, 1:N), 'bo-', LineWidth=2)
-hold off;
-legend('Finite horizon', 'Infinite horizon')
-
-Inf_cost = 0;
-
-for i=1:N
-    Inf_cost = Inf_cost + x(:, i)' * Q * x(:, i) + u(:, i)' * R * u(:, i);
 end
-
-% %% verify costs are the same
-% if round(Finite_cost, 4) == round(Inf_cost, 4) 
-%     fprintf('Costs are the same!\n')
-%     fprintf('Final cost = %f\n', Finite_cost)
-% else
-%     fprintf('ERROR!! Costs are different!\n')
-% end

@@ -15,27 +15,17 @@ Q = diag([500, 100]);
 P = diag([1500, 100]);
 
 Sx = ones(2 * N + 2, 2);
-Su = zeros(2 * N + 2, 2 * N);
+Su = zeros(2 * N + 2, N);
 
-Sx(2, 1) = 0;
-Sx(1, 2) = 0;
-for i = 1:N
-    Anew = A ^ i;
-    Sx(i * 2 + 1 , :) = Anew(1, :);
-    Sx(i * 2 + 2, :) = Anew(2, :);
+Sx = eye(size(A));
+Su = zeros(size(A,1)*N,size(B,2)*N);
+
+for i=1:N
+    Sx = [Sx; A^i];
+    Su = Su + kron( diag( ones(N-i+1,1) , -i+1 ) , A^(i-1)*B );
 end
 
-vector = zeros(2 * N + 2, 2);
-for i = 1:N
-    Cnew = A ^ (i-1) * B;
-    vector(i * 2 + 1 , :) = Cnew(1, :);
-    vector(i * 2 + 2, :) = Cnew(2, :);
-end
-
-Su(:, 1:2) = vector;
-for i=1:N-1
-    Su(i*2+1:end, i*2+1:i*2+2) = vector(1:2*N-(i-1)*2, :);
-end
+Su = [ zeros(size(A,1),size(B,2)*N) ; Su ];
 
 Q_bar = zeros(2 * N + 2, 2 * N + 2);
 vector = [Q; zeros(2 * N, 2)];
@@ -47,61 +37,30 @@ for i=1:N-1
     Q_bar(i*2+1:end, i*2+1:i*2+2) = vector(1:2*N-(i-1)*2, :);
 end
 
-R_bar = diag([ones(1, 2 * N)]);
+R_bar = diag([ones(1, N)]);
 
 U0 = - inv(Su' * Q_bar * Su + R_bar) * Su' * Q_bar * Sx * x0;
 J0 = x0' * (Sx' * Q_bar * Sx - Sx' * Q_bar * Su * inv(Su' * Q_bar * Su + R_bar) * Su' * Q_bar * Sx) * x0;
+
+fprintf("Cost batch approach: %d\n", J0)
 
 %% 2. verify the result by solving an opt. problem
 H = 2 * (Su' * Q_bar * Su + R_bar);
 F = Sx' * Q_bar * Su;
 f = 2 * x0' * F;
 
-% X = quadprog(H,f,A,b);
+[Ustar, costQ] = quadprog(H, f');
+% Cost completion
+costQ = costQ + x0'*Sx'*Q_bar*Sx*x0;
+fprintf("Cost quadratic program: %d\n", costQ)
 
 %% 3. Recursive approach
-Pnow = P;
-
-P = zeros(2 * N, 2);
-
-P(2 * N - 1, :) = Pnow(1, :);
-P(2 * N, :) = Pnow(2, :);
-
-% discrete time Riccati equation
-
-for i = N-1:-1:1
-    Pnext = A' * Pnow * A + Q - A' * Pnow * B * inv(B' * Pnow * B + R) * B' * Pnow * A;
-    P(i * 2 - 1 , :) = Pnext(1, :);
-    P(i * 2, :) = Pnext(2, :);
-    Pnow = Pnext;
+PRec{N+1} = P;
+for i=N:-1:1
+    PRec{i} = A'*PRec{i+1}*A + Q - A'*PRec{i+1}*B...
+        *(B'*PRec{i+1}*B + R)^(-1)*B'*PRec{i+1}*A;
 end
+% Optimum of the recursive approach
+costRec = x0'*PRec{1}*x0;
 
-F = zeros(2 * N, 1);
-for i = N-1:-1:1
-    Pnow = [P(i * 2 + 1 , :); P(i * 2 + 2, :)];
-    Fnext = - inv(B' * Pnow * B + R) * B' * Pnow * A;
-    F(i * 2 - 1 , :) = Fnext(1);
-    F(i * 2, :) = Fnext(2);
-end
-
-% state trajectory
-u = zeros(2, N);
-x = zeros(2, N);
-
-x(:, 1) = x0;
-
-for i=1:N-1
-    Fnow = [F(i * 2 - 1); F(i * 2)];
-    u(:, i) = Fnow' * x(:, i);
-    x(:, i + 1) = A * x(:, i) + B' * u(:, i);
-end
-
-Finite_cost = 0;
-
-for i=1:N-1
-    Finite_cost = Finite_cost + x(:, i)' * Q * x(:, i) + u(:, i)' * R * u(:, i);
-end
-
-%% 4. comparison
-D = [0.1 0.1]';
-w = randn(N, 1) * sqrt(10);
+fprintf("Cost recursive approach: %d\n", costRec)
